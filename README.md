@@ -10,6 +10,7 @@ A cute little desktop companion for Windows, built with Electron. It lives in a 
 - **To-do list and reminders** – add tasks, tick them off, set reminders by clock time or "in N minutes".
 - **Spotify / media control** – play/pause, next, previous and volume via Windows media keys (no login needed). Shows the current song from the Spotify window title.
 - **Voice commands** – push-to-talk (`Ctrl+Alt+V` or the mic button) using OpenAI's Whisper model running fully offline on your PC (via transformers.js). The first use downloads a ~77 MB model once (needs internet that one time); after that no audio ever leaves your computer. Free, no API key.
+- **Ask AI** – ask any question by typing in the 🤖 panel or by voice ("what is the capital of France?", "ask ChatGPT to explain ..."). Anything that isn't a command goes to the AI and the answer appears in the speech bubble (long answers open in the panel) and is read aloud. Works with any OpenAI-compatible chat API: Google Gemini and Groq have free keys, OpenRouter has free models, Ollama runs locally with no key, or use the paid OpenAI API. Pick the provider and paste your key in 🤖 ⚙. The key is stored encrypted on your PC (Windows DPAPI). Note: a ChatGPT account (free or Plus) does not include API access, so it can't be used directly.
 - **Moves around** – drag it anywhere, or say/type `left`, `right`, `center`, `top`, `bottom` to slide it. The window size stays fixed.
 - **Starts with Windows** – registers itself at login (toggle in the tray menu).
 - **Interactive** – eyes follow your cursor, click to poke it, it falls asleep if ignored.
@@ -57,7 +58,8 @@ The app is not code-signed, so Windows SmartScreen may show "Windows protected y
 ## Notes
 
 - Windows only: app detection and media keys use PowerShell and built-in Windows APIs. No native Node modules are needed.
-- Voice: `npm install` copies the speech runtime into `voice/vendor/` (git-ignored). To trade accuracy for speed, change `MODEL` in `main.js` from `whisper-base.en` to `whisper-tiny.en` (about twice as fast, slightly less accurate).
+- Voice: `npm install` copies the speech runtime into `voice/vendor/` (git-ignored). The default model is the fast one (`whisper-tiny.en`, ~43 MB, about 1.3 s per command); switch to the more accurate `whisper-base.en` (~77 MB, about 2.2 s) in 🤖 ⚙ → Voice model.
+- Questions you ask the AI are sent to the provider you choose. Commands and voice recognition stay on your PC.
 - Settings (to-dos, reminders, position) are saved in Electron's user data folder.
 - To turn off start-with-Windows, untick it in the tray menu.
 

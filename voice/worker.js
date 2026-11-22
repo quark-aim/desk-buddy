@@ -12,7 +12,7 @@ self.onmessage = async (e) => {
       env.localModelPath = m.modelRoot;
       env.backends.onnx.wasm.wasmPaths = m.wasmRoot;
       env.backends.onnx.wasm.numThreads = m.threads || 1;
-      asr = await pipeline('automatic-speech-recognition', m.model, { dtype: 'q8', device: 'wasm' });
+      asr = await pipeline('automatic-speech-recognition', m.model, { dtype: m.dtype || 'q8', device: m.device || 'wasm' });
       self.postMessage({ type: 'ready' });
     } else if (m.type === 'transcribe') {
       const t0 = performance.now();

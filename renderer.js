@@ -2,7 +2,8 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const pet = $('#pet'), face = $('#face'), bubble = $('#bubble');
 
-let S = { todos: [], reminders: [], focusMin: 25, breakMin: 5, pomos: 0 };
+const DEFAULT_AI = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', speak: true };
+let S = { todos: [], reminders: [], focusMin: 25, breakMin: 5, pomos: 0, voiceModel: 'whisper-tiny.en', ai: { ...DEFAULT_AI } };
 const save = () => window.buddy.setState(S);
 
 /* ---------------- mood + speech ---------------- */
@@ -243,7 +244,7 @@ function parseWhen(s) {
   }
   return null;
 }
-function runCommand(raw) {
+function runCommand(raw, fallback) {
   const c = raw.trim(); const l = c.toLowerCase(); if (!c) return;
   let m;
   if (/^(left|slide left|go left)$/.test(l)) { window.buddy.move('left'); say('Wheee ←', 1500, 'excited'); }
@@ -268,7 +269,12 @@ function runCommand(raw) {
   else if (/^(hide|bye)$/.test(l)) window.buddy.hide();
   else if (/^(quit|exit)$/.test(l)) window.buddy.quit();
   else if (/^(hi|hello|hey)/.test(l)) say('Hi there! 👋', 3000, 'love');
-  else say("Hmm, I don't know that one yet 🤔", 3000, 'wow');
+  else if (fallback) fallback(c);
+  else unknownCommand(c);
+}
+// anything that is not a command goes to the AI (if you set one up in the 🤖 panel)
+function unknownCommand(text) {
+  if (aiReady()) askAI(text); else say("Hmm, I don't know that one yet 🤔 (set up 🤖 Ask AI to chat with me)", 4500, 'wow');
 }
 $('#cmdIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') { runCommand(e.target.value); e.target.value = ''; } if (e.key === 'Escape') openPanel('cmd'); });
 
@@ -330,6 +336,10 @@ setInterval(() => {
 (async function init() {
   const saved = await window.buddy.getState();
   if (saved) S = { ...S, ...saved };
+  S.ai = { ...DEFAULT_AI, ...(S.ai || {}) };
+  aiHasKey = await window.buddy.aiHasKey();
+  // warm up the voice model in the background (only if it is already downloaded) so the first command is instant
+  window.buddy.voiceModelExists(S.voiceModel).then((ok) => { if (ok) setTimeout(() => initVoice(true).catch(() => {}), 2500); });
   pomo.left = S.focusMin * 60; drawPomo(); setMood('neutral');
   const h = new Date().getHours();
   const greet = h < 5 ? 'Still up? 🌙' : h < 12 ? 'Good morning! ☀️' : h < 18 ? 'Good afternoon! 🌤️' : 'Good evening! 🌆';
@@ -376,12 +386,13 @@ const voice = { worker: null, ready: false, loadP: null, busy: false, reqId: 0 }
 function endListening() { clearTimeout(voiceGuard); if (['listen', 'think'].includes(face.className.split(' ')[0])) setMood(baseMood); }
 
 // loads the model (downloads it once on first use) and starts the worker
-function initVoice() {
+function resetVoice() { if (voice.worker) voice.worker.terminate(); voice.worker = null; voice.ready = false; voice.loadP = null; }
+function initVoice(quiet) {
   if (voice.loadP) return voice.loadP;
   voice.loadP = (async () => {
-    say('Getting my ears ready… one-time download 🎧', 60000);
-    const info = await window.buddy.ensureVoiceModel();
-    say('Loading voice model…', 60000);
+    if (!quiet) say('Getting my ears ready… one-time download 🎧', 60000);
+    const info = await window.buddy.ensureVoiceModel(S.voiceModel);
+    if (!quiet) say('Loading voice model…', 60000);
     voice.worker = new Worker('voice/worker.js', { type: 'module' });
     await new Promise((resolve, reject) => {
       voice.worker.onmessage = (ev) => { if (ev.data.type === 'ready') resolve(); else if (ev.data.type === 'error') reject(new Error(ev.data.message)); };
@@ -431,7 +442,7 @@ async function recordUtterance() {
       if (rmsList.length === 3) thr = Math.max(0.018, Math.min(...rmsList) * 3 + 0.006); // learn the room's noise level
       if (rmsList.length > 3) { if (rms > thr) { spoke = true; silent = 0; } else if (spoke) silent += dur; }
       const el = (Date.now() - t0) / 1000;
-      if (spoke && silent >= 1.0) finish(true);
+      if (spoke && silent >= 0.6) finish(true);
       else if (!spoke && el > 6) finish(false);
       else if (el > 12) finish(spoke);
     };
@@ -453,9 +464,8 @@ async function startVoice() {
     const clean = (text || '').replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim();
     endListening();
     if (!clean || JUNK.test(clean)) { say("I didn't catch that 🙉 try again", 3000, 'sad'); return; }
-    const cmd = voiceNormalize(clean);
-    say('🎤 “' + clean + '”', 1800, 'wow');
-    setTimeout(() => runCommand(cmd), 1000);
+    say('🎤 “' + clean + '”', 1500, 'wow');
+    setTimeout(() => handleUtterance(clean), 250);
   } catch (err) {
     endListening();
     const msg = /Permission|NotAllowed|denied/i.test(String(err.message)) ? 'Mic blocked: allow microphone access in Windows settings' : String(err.message).slice(0, 80);
@@ -464,3 +474,98 @@ async function startVoice() {
 }
 window.buddy.onVoiceStart(startVoice);
 $('#micBtn').onclick = startVoice;
+
+/* ---------------- Ask AI ---------------- */
+let aiHasKey = false;
+const aiHistory = [];
+const AI_SYSTEM = 'You are Buddy, a cute, friendly desktop pet assistant living on the user\'s screen. Answer in 1-3 short plain sentences (no markdown, no lists, no emojis spam) unless the user asks for detail. Be warm and a little playful.';
+const PRESETS = {
+  gemini: { label: 'Google Gemini (free key)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', hint: 'Free key: aistudio.google.com/apikey' },
+  groq: { label: 'Groq (free key)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', hint: 'Free key: console.groq.com/keys' },
+  openrouter: { label: 'OpenRouter (free models)', baseUrl: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.3-70b-instruct:free', hint: 'Free key: openrouter.ai/keys' },
+  openai: { label: 'OpenAI API (paid credits)', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hint: 'Needs API credits at platform.openai.com. A ChatGPT account does not include API access.' },
+  ollama: { label: 'Ollama (local, no key)', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', hint: 'Install Ollama, run: ollama pull llama3.2' },
+  custom: { label: 'Custom (OpenAI-compatible)', baseUrl: '', model: '', hint: 'Any OpenAI-compatible /chat/completions address.' },
+};
+const aiReady = () => aiHasKey || /^http:/i.test(S.ai.baseUrl || '');
+
+function speak(text) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text.slice(0, 600)); u.rate = 1.05; u.pitch = 1.25;
+    speechSynthesis.speak(u);
+  } catch {}
+}
+const stopSpeaking = () => { try { speechSynthesis.cancel(); } catch {} };
+
+function renderAnswer() {
+  const box = $('#aiAnswer'); box.innerHTML = '';
+  if (!aiHistory.length) { box.textContent = 'Ask me anything! Type below, or say "ask ..." / any question with Ctrl+Alt+V.'; return; }
+  aiHistory.slice(-6).forEach((m) => {
+    const p = document.createElement('div'); p.className = m.role === 'user' ? 'qa q' : 'qa a';
+    p.textContent = (m.role === 'user' ? 'You: ' : 'Buddy: ') + m.content; box.append(p);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+
+async function askAI(q) {
+  q = (q || '').trim(); if (!q) return;
+  stopSpeaking(); lastActive = Date.now();
+  setMood('think'); say('Asking… 💭', 40000);
+  aiHistory.push({ role: 'user', content: q }); renderAnswer();
+  const r = await window.buddy.aiAsk({ baseUrl: S.ai.baseUrl, model: S.ai.model, messages: [{ role: 'system', content: AI_SYSTEM }, ...aiHistory.slice(-8)] });
+  if (!r.ok) {
+    aiHistory.pop(); renderAnswer(); setMood('sad', 3500); say(r.error, 8000);
+    if (/key|settings/i.test(r.error)) setTimeout(() => { if (!$('#p-ai').classList.contains('open')) openPanel('ai'); showAiSettings(true); }, 600);
+    return;
+  }
+  aiHistory.push({ role: 'assistant', content: r.text }); while (aiHistory.length > 14) aiHistory.shift();
+  renderAnswer();
+  const short = r.text.length <= 105;
+  setMood('happy', 3000); bodyAnim('hop', 650);
+  say(short ? r.text : r.text.slice(0, 95).replace(/\s+\S*$/, '') + '… (see 🤖)', Math.min(20000, Math.max(5000, r.text.length * 55)));
+  if (!short && !$('#p-ai').classList.contains('open')) openPanel('ai');
+  if (S.ai.speak) speak(r.text);
+}
+
+// routes what you said: "ask ..."/questions -> AI, commands -> commands, anything else -> AI (if set up)
+const AI_PREFIX = /^(?:hey |ok |okay )?(?:chat ?gpt|gpt|gemini|assistant|ask(?: chat ?gpt| gpt| ai| buddy| gemini)?)[\s,:]+(.+)$/i;
+const QUESTION = /^(what|whats|who|whos|when|where|why|how|which|explain|define|tell me|translate|calculate|is there|are there|do you know|does|did|should i|give me|write me|summarize|suggest|recommend)\b/i;
+function handleUtterance(clean) {
+  const lc = clean.replace(/[.!?]+$/, '').trim();
+  let m;
+  if ((m = lc.match(AI_PREFIX))) return askAI(m[1]);
+  if (QUESTION.test(lc.replace(/^(?:hey |ok |okay )?(?:buddy[ ,]+)?(?:please )?/i, ''))) return askAI(lc);
+  runCommand(voiceNormalize(clean), () => unknownCommand(lc));
+}
+
+// panel: ask box + settings
+const showAiSettings = (on) => { $('#aiMain').style.display = on ? 'none' : 'flex'; $('#aiSet').style.display = on ? 'flex' : 'none'; if (on) fillAiSettings(); };
+function fillAiSettings() {
+  const sel = $('#aiPreset'); if (!sel.options.length) Object.entries(PRESETS).forEach(([k, v]) => sel.add(new Option(v.label, k)));
+  sel.value = S.ai.preset in PRESETS ? S.ai.preset : 'custom';
+  $('#aiUrl').value = S.ai.baseUrl; $('#aiModel').value = S.ai.model; $('#aiSpeak').checked = !!S.ai.speak;
+  $('#aiKey').value = ''; $('#aiKey').placeholder = aiHasKey ? 'API key saved ✓ (type to replace)' : 'Paste your API key';
+  $('#aiHint').textContent = PRESETS[sel.value].hint; $('#voiceModel').value = S.voiceModel;
+  $('#aiUrl').readOnly = sel.value !== 'custom';
+}
+$('#aiPreset').onchange = (e) => {
+  const p = PRESETS[e.target.value]; $('#aiHint').textContent = p.hint;
+  if (e.target.value !== 'custom') { $('#aiUrl').value = p.baseUrl; $('#aiModel').value = p.model; }
+  $('#aiUrl').readOnly = e.target.value !== 'custom';
+};
+$('#aiGear').onclick = () => showAiSettings($('#aiSet').style.display !== 'flex');
+$('#aiBack').onclick = () => showAiSettings(false);
+$('#aiSave').onclick = async () => {
+  S.ai = { preset: $('#aiPreset').value, baseUrl: $('#aiUrl').value.trim(), model: $('#aiModel').value.trim(), speak: $('#aiSpeak').checked };
+  const vm = $('#voiceModel').value; const voiceChanged = vm !== S.voiceModel; S.voiceModel = vm; save();
+  const k = $('#aiKey').value.trim();
+  if (k) { const r = await window.buddy.aiSetKey(k); if (!r.ok) { say(r.error, 5000, 'sad'); return; } aiHasKey = r.has; }
+  if (voiceChanged) { resetVoice(); window.buddy.voiceModelExists(S.voiceModel).then((ok) => { if (ok) initVoice(true).catch(() => {}); }); }
+  showAiSettings(false); say('Saved ✅' + (voiceChanged ? ' (new voice model loads on next use)' : ''), 3000, 'happy');
+};
+$('#aiClearKey').onclick = async () => { await window.buddy.aiSetKey(''); aiHasKey = false; fillAiSettings(); say('API key removed', 2500); };
+$('#aiGo').onclick = () => { const v = $('#aiIn').value; $('#aiIn').value = ''; askAI(v); };
+$('#aiIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#aiGo').click(); });
+$('#aiStop').onclick = stopSpeaking;
+renderAnswer();

@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, ipcMain, screen, Tray, Menu, globalShortcut, nativeImage, shell, session } = require('electron');
+﻿const { app, BrowserWindow, ipcMain, screen, Tray, Menu, globalShortcut, nativeImage, shell, session, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
@@ -117,7 +117,7 @@ while (($l = [Console]::In.ReadLine()) -ne $null) {
   mediaProc = ps(script);
 }
 /* ---------- voice: offline Whisper (runs in the renderer; model downloaded once) ---------- */
-const MODEL = 'whisper-base.en'; // swap for 'whisper-tiny.en' (faster, less accurate)
+const MODELS = ['whisper-tiny.en', 'whisper-base.en']; // tiny = fast (~1.3 s), base = more accurate (~2.2 s)
 const MODEL_FILES = ['config.json', 'generation_config.json', 'preprocessor_config.json', 'tokenizer.json', 'tokenizer_config.json',
   'onnx/encoder_model_quantized.onnx', 'onnx/decoder_model_merged_quantized.onnx'];
 const https = require('https');
@@ -140,11 +140,17 @@ function download(url, dest, onBytes, hops = 0) {
   });
 }
 
-let modelPromise;
-function ensureModel() {
-  if (modelPromise) return modelPromise;
-  modelPromise = (async () => {
-    const root = path.join(app.getPath('userData'), 'models');
+const modelPromises = {};
+const modelRoot = () => path.join(app.getPath('userData'), 'models');
+function modelMissing(MODEL) {
+  const base = path.join(modelRoot(), MODEL);
+  return MODEL_FILES.filter((f) => { try { return fs.statSync(path.join(base, f)).size === 0; } catch { return true; } });
+}
+function ensureModel(MODEL) {
+  if (!MODELS.includes(MODEL)) MODEL = MODELS[0];
+  if (modelPromises[MODEL]) return modelPromises[MODEL];
+  modelPromises[MODEL] = (async () => {
+    const root = modelRoot();
     const base = path.join(root, MODEL);
     const missing = MODEL_FILES.filter((f) => { try { return fs.statSync(path.join(base, f)).size === 0; } catch { return true; } });
     if (missing.length) {
@@ -170,15 +176,53 @@ function ensureModel() {
       }
     }
     return {
-      model: MODEL,
+      model: MODEL, device: 'wasm', dtype: 'q8',
       modelRoot: pathToFileURL(root).href + '/',
       wasmRoot: pathToFileURL(path.join(__dirname, 'voice', 'vendor')).href + '/',
       threads: Math.max(1, Math.min(4, require('os').cpus().length - 1)),
     };
-  })().catch((err) => { modelPromise = null; throw err; });
-  return modelPromise;
+  })().catch((err) => { delete modelPromises[MODEL]; throw err; });
+  return modelPromises[MODEL];
 }
 function voiceListen() { if (win && !win.isDestroyed()) win.webContents.send('voice-start'); }
+
+/* ---------- "Ask AI": any OpenAI-compatible chat API (Gemini free, Groq free, OpenRouter, OpenAI, Ollama...) ---------- */
+// The API key is stored encrypted (Windows DPAPI) and never leaves this process except in the request to the provider you chose.
+function getAiKey() {
+  const s = loadState() || {};
+  if (!s.aiKey) return '';
+  try { return safeStorage.decryptString(Buffer.from(s.aiKey, 'base64')); } catch { return ''; }
+}
+function validBaseUrl(u) {
+  try {
+    const x = new URL(u);
+    return x.protocol === 'https:' || (x.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(x.hostname));
+  } catch { return false; }
+}
+async function aiAsk({ baseUrl, model, messages }) {
+  if (!validBaseUrl(baseUrl)) return { ok: false, error: 'Set a valid https:// API address in the AI settings.' };
+  if (!model) return { ok: false, error: 'Set a model name in the AI settings.' };
+  const key = getAiKey();
+  const isLocal = /^http:/i.test(baseUrl);
+  if (!key && !isLocal) return { ok: false, error: 'Add your API key in the AI settings first.' };
+  try {
+    const res = await fetch(baseUrl.replace(/\/+$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) },
+      body: JSON.stringify({ model, messages: messages.slice(-12), max_tokens: 400, temperature: 0.7 }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      const hint = res.status === 401 || res.status === 403 ? 'API key was rejected.' : res.status === 429 ? 'Rate limit hit, wait a little and try again.' : res.status === 404 ? 'Model or address not found, check the AI settings.' : 'The AI service returned an error (' + res.status + ').';
+      return { ok: false, error: hint };
+    }
+    const data = await res.json();
+    const text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    return text ? { ok: true, text: String(text).trim() } : { ok: false, error: 'The AI sent an empty answer.' };
+  } catch (err) {
+    return { ok: false, error: err && err.name === 'TimeoutError' ? 'The AI took too long to answer.' : 'Could not reach the AI service (offline?).' };
+  }
+}
 
 const KEYS = { playpause: 0xB3, next: 0xB0, prev: 0xB1, volup: 0xAF, voldown: 0xAE, mute: 0xAD };
 
@@ -251,7 +295,18 @@ app.whenReady().then(() => {
   ipcMain.on('drag-move', () => { if (!drag) return; const c = screen.getCursorScreenPoint(); win.setBounds({ x: drag.p[0] + c.x - drag.m.x, y: drag.p[1] + c.y - drag.m.y, width: W, height: H }); });
   ipcMain.on('drag-end', () => { drag = null; persistPos(); });
   ipcMain.on('voice-listen', voiceListen);
-  ipcMain.handle('voice-ensure-model', () => ensureModel());
+  ipcMain.handle('voice-ensure-model', (_, model) => ensureModel(model));
+  ipcMain.handle('voice-model-exists', (_, model) => MODELS.includes(model) && modelMissing(model).length === 0);
+  ipcMain.handle('ai-ask', (_, args) => aiAsk(args || {}));
+  ipcMain.handle('ai-has-key', () => !!getAiKey());
+  ipcMain.handle('ai-set-key', (_, key) => {
+    const s = loadState() || {};
+    key = String(key || '').trim();
+    if (!key) { delete s.aiKey; saveState(s); return { ok: true, has: false }; }
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Secure key storage is not available on this PC.' };
+    s.aiKey = safeStorage.encryptString(key).toString('base64'); saveState(s);
+    return { ok: true, has: true };
+  });
   // microphone access for voice commands (only for our own window)
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(perm === 'media'));
   session.defaultSession.setPermissionCheckHandler((wc, perm) => perm === 'media');

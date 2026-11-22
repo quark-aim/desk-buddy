@@ -8,6 +8,8 @@ const files = [
   ['node_modules/@huggingface/transformers/dist/transformers.min.js', 'transformers.min.js'], // self-contained build (bundles onnxruntime-web)
   ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.mjs'],
   ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.wasm', 'ort-wasm-simd-threaded.asyncify.wasm'],
+  ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.mjs'], // GPU (WebGPU) path
+  ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm', 'ort-wasm-simd-threaded.jsep.wasm'],
 ];
 fs.mkdirSync(out, { recursive: true });
 let ok = true;

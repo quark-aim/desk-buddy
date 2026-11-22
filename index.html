@@ -90,7 +90,7 @@
   /* dock */
   #dock { position: absolute; left: 0; right: 0; bottom: 0; height: 52px; display: flex; justify-content: space-around; align-items: center; padding: 0 12px;
     background: rgba(0,0,0,.25); }
-  #dock button { width: 38px; height: 38px; border-radius: 12px; border: none; background: rgba(255,255,255,.07); color: #fff; font-size: 18px; cursor: pointer; transition: background .15s, transform .15s; }
+  #dock button { width: 36px; height: 36px; border-radius: 12px; border: none; background: rgba(255,255,255,.07); color: #fff; font-size: 18px; cursor: pointer; transition: background .15s, transform .15s; }
   #dock button:hover { background: rgba(125,249,255,.25); transform: translateY(-2px); }
   #dock button.on { background: rgba(125,249,255,.35); }
   #timerChip { position: absolute; top: 10px; right: 14px; font-size: 12px; font-weight: 600; color: #ffd27d; opacity: 0; transition: opacity .2s; }
@@ -101,7 +101,17 @@
   .panel.open { display: flex; animation: up .18s ease-out; }
   .panel h3 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #8ea0d8; }
   .row { display: flex; gap: 6px; align-items: center; }
-  input[type=text], input[type=time], input[type=number] { flex: 1; min-width: 0; background: #0f1222; border: 1px solid #38406a; color: #fff; border-radius: 10px; padding: 6px 9px; font-size: 13px; outline: none; user-select: text; }
+  #aiMain, #aiSet { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; }
+  #aiSet { display: none; overflow-y: auto; padding-right: 4px; }
+  #aiSet::-webkit-scrollbar, #aiAnswer::-webkit-scrollbar { width: 5px; } #aiSet::-webkit-scrollbar-thumb, #aiAnswer::-webkit-scrollbar-thumb { background: #38406a; border-radius: 4px; }
+  #aiAnswer { flex: 1; min-height: 0; overflow-y: auto; font-size: 12.5px; line-height: 1.35; background: rgba(255,255,255,.05); border-radius: 10px; padding: 6px 8px; user-select: text; }
+  .qa.q { color: #8ea0d8; margin-bottom: 2px; } .qa.a { margin-bottom: 6px; }
+  .h3row { display: flex; align-items: center; justify-content: space-between; }
+  .link { background: none; border: none; color: #8ea0d8; cursor: pointer; font-size: 15px; padding: 0 2px; }
+  .link:hover { color: #7df9ff; }
+  select { flex: 1; min-width: 0; background: #0f1222; border: 1px solid #38406a; color: #fff; border-radius: 10px; padding: 5px 8px; font-size: 12.5px; outline: none; }
+  label.chk { font-size: 12px; display: flex; gap: 6px; align-items: center; } .small { font-size: 11px; color: #8ea0d8; }
+  input[type=text], input[type=password], input[type=time], input[type=number] { flex: 1; min-width: 0; background: #0f1222; border: 1px solid #38406a; color: #fff; border-radius: 10px; padding: 6px 9px; font-size: 13px; outline: none; user-select: text; }
   input:focus { border-color: #7df9ff; }
   .btn { background: #2d3560; color: #fff; border: none; border-radius: 10px; padding: 6px 11px; font-size: 13px; cursor: pointer; }
   .btn:hover { background: #3b4580; }
@@ -194,6 +204,27 @@
   </div>
 
   <!-- Command bar -->
+  <!-- Ask AI -->
+  <div class="panel" id="p-ai">
+    <div id="aiMain">
+      <div class="h3row"><h3>Ask AI</h3><div><button class="link" id="aiStop" title="Stop talking">🔇</button><button class="link" id="aiGear" title="AI &amp; voice settings">⚙</button></div></div>
+      <div id="aiAnswer"></div>
+      <div class="row"><input type="text" id="aiIn" placeholder="Ask a question…"><button class="btn pri" id="aiGo">Ask</button></div>
+    </div>
+    <div id="aiSet">
+      <div class="h3row"><h3>AI &amp; voice settings</h3><button class="link" id="aiBack" title="Back">✕</button></div>
+      <select id="aiPreset"></select>
+      <input type="password" id="aiKey" placeholder="Paste your API key">
+      <input type="text" id="aiModel" placeholder="Model name">
+      <input type="text" id="aiUrl" placeholder="API address (https://…/v1)">
+      <div class="small" id="aiHint"></div>
+      <label class="chk"><input type="checkbox" id="aiSpeak"> Read answers aloud</label>
+      <div class="row"><span class="small" style="min-width:74px">Voice model</span>
+        <select id="voiceModel"><option value="whisper-tiny.en">Fast (tiny)</option><option value="whisper-base.en">Accurate (base)</option></select></div>
+      <div class="row"><button class="btn pri" id="aiSave">Save</button><button class="btn" id="aiClearKey">Remove key</button></div>
+    </div>
+  </div>
+
   <div class="panel" id="p-cmd">
     <h3>Talk to me</h3>
     <div class="row"><input type="text" id="cmdIn" placeholder="type a command..."></div>
@@ -202,6 +233,7 @@
       <b>focus 25</b> · <b>break 5</b> · <b>stop</b><br>
       <b>todo buy milk</b> · <b>remind stretch in 10m</b> · <b>remind call at 17:30</b><br>
       🎤 <b>Ctrl+Alt+V</b> or the mic button: say any of these<br>
+      <b>ask ...</b> or any question → 🤖 AI answers (set up in 🤖 ⚙)<br>
       <b>play</b> · <b>next</b> · <b>prev</b> · <b>hide</b> · <b>quit</b><br>
       Hotkeys: Ctrl+Alt + ←/→/↑/↓ move · H hide · Space talk
     </div>
@@ -213,6 +245,7 @@
     <button data-p="rem" title="Reminders">⏰</button>
     <button data-p="music" title="Music">🎵</button>
     <button id="micBtn" title="Voice command (Ctrl+Alt+V) - offline Whisper">🎤</button>
+    <button data-p="ai" title="Ask AI">🤖</button>
     <button data-p="cmd" title="Talk / commands">💬</button>
   </div>
 </div>
