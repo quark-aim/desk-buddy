@@ -1,0 +1,12 @@
+{
+  "name": "desk-buddy",
+  "version": "0.1.0",
+  "description": "A cute desktop companion: pomodoro, reminders, to-dos, Spotify controls, app-aware reactions",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}
