@@ -2,7 +2,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const pet = $('#pet'), face = $('#face'), bubble = $('#bubble');
 
-const DEFAULT_AI = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', speak: true };
+const DEFAULT_AI = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-flash-lite-latest', speak: true, voice: '', pitch: 30, engine: 'google', gvoice: 'Leda' };
 let S = { todos: [], reminders: [], focusMin: 25, breakMin: 5, pomos: 0, voiceModel: 'whisper-tiny.en', ai: { ...DEFAULT_AI } };
 const save = () => window.buddy.setState(S);
 
@@ -263,9 +263,12 @@ function runCommand(raw, fallback) {
   else if (/^(play|pause|toggle|music)$/.test(l)) window.buddy.media('playpause');
   else if (/^(next|skip)$/.test(l)) window.buddy.media('next');
   else if (/^(prev|previous|back)$/.test(l)) window.buddy.media('prev');
-  else if (/^(vol(ume)? up|louder)$/.test(l)) window.buddy.media('volup');
-  else if (/^(vol(ume)? down|quieter)$/.test(l)) window.buddy.media('voldown');
-  else if (/^(mute|unmute)$/.test(l)) window.buddy.media('mute');
+  else if ((m = l.match(/^vol(?:ume)?(?: to| at)?\s+(\d{1,3})$/))) window.buddy.volume({ set: Math.min(100, +m[1]) });
+  else if ((m = l.match(/^vol(?:ume)? (up|down)(?:\s+(\d{1,3}))?$/))) window.buddy.volume({ add: (m[1] === 'up' ? 1 : -1) * (m[2] ? Math.min(100, +m[2]) : 10) });
+  else if (l === 'louder') window.buddy.volume({ add: 10 });
+  else if (l === 'quieter') window.buddy.volume({ add: -10 });
+  else if (l === 'mute') window.buddy.volume({ mute: true });
+  else if (l === 'unmute') window.buddy.volume({ mute: false });
   else if (/^(hide|bye)$/.test(l)) window.buddy.hide();
   else if (/^(quit|exit)$/.test(l)) window.buddy.quit();
   else if (/^(hi|hello|hey)/.test(l)) say('Hi there! 👋', 3000, 'love');
@@ -337,6 +340,7 @@ setInterval(() => {
   const saved = await window.buddy.getState();
   if (saved) S = { ...S, ...saved };
   S.ai = { ...DEFAULT_AI, ...(S.ai || {}) };
+  if (S.ai.preset === 'gemini' && /^gemini-2.5-flash$/.test(S.ai.model)) S.ai.model = DEFAULT_AI.model; // that model was retired for new users
   aiHasKey = await window.buddy.aiHasKey();
   // warm up the voice model in the background (only if it is already downloaded) so the first command is instant
   window.buddy.voiceModelExists(S.voiceModel).then((ok) => { if (ok) setTimeout(() => initVoice(true).catch(() => {}), 2500); });
@@ -360,6 +364,17 @@ function voiceNormalize(raw) {
   t = numberWords(t)
     .replace(/^(hey |ok |okay )?(buddy|tabby|pet)[ ,]*/, '').replace(/^(please |can you |could you |would you )+/, '').replace(/ please$/, '');
   t = t.replace(/\b(go|move|slide|to|the)\s+(write|rite)\b/g, '$1 right').replace(/^(write|rite)$/, 'right').replace(/\b(go|move|slide|to|the)\s+(lift|loft|lef)\b/g, '$1 left').replace(/^(lift|loft)$/, 'left');
+  t = t.replace(/\b(?:one |a )?hundred( percent)?\b/g, '100');
+  if (/\bvolume\b/.test(t)) {
+    const num = t.match(/\b(\d{1,3})\b/);
+    const dir = /\b(up|louder|increase|raise|higher|more)\b/.test(t) ? 'up' : /\b(down|quieter|lower|decrease|reduce|softer|less)\b/.test(t) ? 'down' : '';
+    if (/\b(max|maximum|full)\b/.test(t)) return 'volume 100';
+    if (/\bhalf\b/.test(t)) return 'volume 50';
+    if (num && /\b(to|at)\s+\d/.test(t)) return 'volume ' + num[1];
+    if (num && dir) return 'volume ' + dir + ' ' + num[1];
+    if (num) return 'volume ' + num[1];
+    if (dir) return 'volume ' + dir;
+  }
   let m;
   if ((m = t.match(/\b(?:move|go|slide|walk|jump|get)\b.*?\b(left|right|center|middle|top|bottom|up|down)\b/)) || (m = t.match(/^(left|right|center|middle|top|bottom)$/))) return m[1];
   if ((m = t.match(/\b(?:focus|pomodoro|work)\b.*?(\d+)/)) || (m = t.match(/\b(\d+)\s*(?:min|minute)s?\b.*\b(?:focus|pomodoro|work)\b/))) return 'focus ' + m[1];
@@ -373,7 +388,8 @@ function voiceNormalize(raw) {
   if (/\b(previous|go back|last (song|track))\b/.test(t)) return 'prev';
   if (/\b(louder|volume up|turn (it )?up)\b/.test(t)) return 'volume up';
   if (/\b(quieter|volume down|turn (it )?down)\b/.test(t)) return 'volume down';
-  if (/\bunmute|\bmute\b/.test(t)) return 'mute';
+  if (/\bunmute\b/.test(t)) return 'unmute';
+  if (/\bmute\b/.test(t)) return 'mute';
   if (/\b(play|pause|resume|music|stop the music)\b/.test(t)) return 'play';
   if (/\b(hide|go away|disappear|bye)\b/.test(t)) return 'hide';
   if (/\b(quit|exit|shut down|close)\b/.test(t)) return 'quit';
@@ -480,7 +496,7 @@ let aiHasKey = false;
 const aiHistory = [];
 const AI_SYSTEM = 'You are Buddy, a cute, friendly desktop pet assistant living on the user\'s screen. Answer in 1-3 short plain sentences (no markdown, no lists, no emojis spam) unless the user asks for detail. Be warm and a little playful.';
 const PRESETS = {
-  gemini: { label: 'Google Gemini (free key)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', hint: 'Free key: aistudio.google.com/apikey' },
+  gemini: { label: 'Google Gemini (free key)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-flash-lite-latest', hint: 'Free key: aistudio.google.com/apikey' },
   groq: { label: 'Groq (free key)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', hint: 'Free key: console.groq.com/keys' },
   openrouter: { label: 'OpenRouter (free models)', baseUrl: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.3-70b-instruct:free', hint: 'Free key: openrouter.ai/keys' },
   openai: { label: 'OpenAI API (paid credits)', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hint: 'Needs API credits at platform.openai.com. A ChatGPT account does not include API access.' },
@@ -489,14 +505,62 @@ const PRESETS = {
 };
 const aiReady = () => aiHasKey || /^http:/i.test(S.ai.baseUrl || '');
 
-function speak(text) {
-  try {
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text.slice(0, 600)); u.rate = 1.05; u.pitch = 1.25;
-    speechSynthesis.speak(u);
-  } catch {}
+let ttsCtx, ttsSrc, talkT, speakSeq = 0;
+function endTalk() {
+  clearInterval(talkT); talkT = null;
+  const mood = face.className.split(' ')[0], shape = MOUTH[mood] || 'cat', pth = $('#mouth path');
+  pth.style.d = "path('" + SHAPES[shape] + "')"; pth.style.fill = FILLED.has(shape) ? 'var(--c)' : 'transparent';
 }
-const stopSpeaking = () => { try { speechSynthesis.cancel(); } catch {} };
+function startTalk() {
+  clearInterval(talkT); const pth = $('#mouth path'); const shapes = ['open', 'o', 'smile', 'open', 'cat'];
+  talkT = setInterval(() => { const k = shapes[Math.floor(Math.random() * shapes.length)]; pth.style.d = "path('" + SHAPES[k] + "')"; pth.style.fill = FILLED.has(k) ? 'var(--c)' : 'transparent'; }, 130);
+}
+const tts = { id: 0, next: 0, srcs: [], endT: null, gain: null, rate: 1, started: false };
+function stopSpeaking() {
+  window.buddy.ttsCancel(tts.id); tts.id++;
+  tts.srcs.forEach((s) => { try { s.stop(); } catch {} }); tts.srcs = []; tts.started = false;
+  clearTimeout(tts.endT); endTalk();
+}
+function queuePcm(pcm, rate) {
+  const n = pcm.byteLength >> 1; if (!n) return;
+  const dv = new DataView(pcm.buffer, pcm.byteOffset, n * 2), f = new Float32Array(n);
+  for (let i = 0; i < n; i++) f[i] = dv.getInt16(i * 2, true) / 32768;
+  const ab = ttsCtx.createBuffer(1, n, rate); ab.copyToChannel(f, 0);
+  const src = ttsCtx.createBufferSource(); src.buffer = ab; src.playbackRate.value = tts.rate; src.connect(tts.gain);
+  const at = Math.max(ttsCtx.currentTime + (tts.started ? 0.02 : 0.12), tts.next);
+  src.start(at); tts.next = at + ab.duration / tts.rate; tts.srcs.push(src);
+  if (!tts.started) { tts.started = true; startTalk(); }
+}
+function finishSpeech() {
+  if (!tts.started) return;
+  const end = tts.next; // short fade-out so nothing clicks at the end
+  tts.gain.gain.setValueAtTime(1, Math.max(ttsCtx.currentTime, end - 0.03)); tts.gain.gain.linearRampToValueAtTime(0, end);
+  clearTimeout(tts.endT); tts.endT = setTimeout(() => { tts.started = false; endTalk(); }, Math.max(0, (end - ttsCtx.currentTime) * 1000) + 150);
+}
+window.buddy.onTtsChunk(async (msg) => {
+  if (msg.id !== tts.id) return;
+  ttsCtx = ttsCtx || new AudioContext();
+  if (msg.pcm) { queuePcm(msg.pcm, msg.rate); return; }
+  if (msg.wav) { // Windows voice fallback arrives as one wav
+    const buf = await ttsCtx.decodeAudioData(msg.wav.buffer.slice(msg.wav.byteOffset, msg.wav.byteOffset + msg.wav.byteLength));
+    if (msg.id !== tts.id) return;
+    tts.rate = 1 + (S.ai.pitch !== undefined ? S.ai.pitch : 30) / 100;
+    const src = ttsCtx.createBufferSource(); src.buffer = buf; src.playbackRate.value = tts.rate; src.connect(tts.gain);
+    const at = ttsCtx.currentTime + 0.05; src.start(at); tts.next = at + buf.duration / tts.rate; tts.srcs.push(src); tts.started = true; startTalk();
+    return;
+  }
+  if (msg.done) finishSpeech();
+});
+async function speak(text, o = {}) {
+  const clean = String(text).replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 700);
+  if (!clean) return;
+  stopSpeaking();
+  ttsCtx = ttsCtx || new AudioContext(); if (ttsCtx.state === 'suspended') ttsCtx.resume();
+  tts.gain = ttsCtx.createGain(); tts.gain.connect(ttsCtx.destination); tts.next = 0;
+  const engine = o.engine || S.ai.engine || 'google', pitch = o.pitch !== undefined ? o.pitch : (S.ai.pitch !== undefined ? S.ai.pitch : 30);
+  tts.rate = engine === 'google' ? 1 + pitch / 300 : 1 + pitch / 100; // Google voice is already cute: only a touch faster
+  window.buddy.ttsStream({ id: tts.id, text: clean, engine, voice: o.voice !== undefined ? o.voice : (engine === 'google' ? S.ai.gvoice : S.ai.voice) });
+}
 
 function renderAnswer() {
   const box = $('#aiAnswer'); box.innerHTML = '';
@@ -516,7 +580,7 @@ async function askAI(q) {
   const r = await window.buddy.aiAsk({ baseUrl: S.ai.baseUrl, model: S.ai.model, messages: [{ role: 'system', content: AI_SYSTEM }, ...aiHistory.slice(-8)] });
   if (!r.ok) {
     aiHistory.pop(); renderAnswer(); setMood('sad', 3500); say(r.error, 8000);
-    if (/key|settings/i.test(r.error)) setTimeout(() => { if (!$('#p-ai').classList.contains('open')) openPanel('ai'); showAiSettings(true); }, 600);
+    if (/API key|rejected/i.test(r.error)) setTimeout(() => { if (!$('#p-ai').classList.contains('open')) openPanel('ai'); showAiSettings(true); }, 600);
     return;
   }
   aiHistory.push({ role: 'assistant', content: r.text }); while (aiHistory.length > 14) aiHistory.shift();
@@ -536,6 +600,8 @@ function handleUtterance(clean) {
   let m;
   if ((m = lc.match(AI_PREFIX))) return askAI(m[1]);
   if (QUESTION.test(lc.replace(/^(?:hey |ok |okay )?(?:buddy[ ,]+)?(?:please )?/i, ''))) return askAI(lc);
+  const pm = lc.match(/^(?:please |hey buddy )?play (?:me )?(?:some )?(.{2,80})$/i);
+  if (pm && !/^(?:the |a |some |my )?(?:next|previous|last|music|songs?|tracks?|something|it|spotify|again)\b/i.test(pm[1].trim())) return searchSpotify(pm[1].trim());
   runCommand(voiceNormalize(clean), () => unknownCommand(lc));
 }
 
@@ -548,7 +614,19 @@ function fillAiSettings() {
   $('#aiKey').value = ''; $('#aiKey').placeholder = aiHasKey ? 'API key saved ✓ (type to replace)' : 'Paste your API key';
   $('#aiHint').textContent = PRESETS[sel.value].hint; $('#voiceModel').value = S.voiceModel;
   $('#aiUrl').readOnly = sel.value !== 'custom';
+  $('#ttsPitch').value = S.ai.pitch;
+  $('#ttsEngine').value = S.ai.engine; fillVoices();
 }
+const GVOICES = [['Leda', 'Leda (youthful)'], ['Zephyr', 'Zephyr (bright)'], ['Aoede', 'Aoede (breezy)'], ['Autonoe', 'Autonoe (bright)'], ['Achernar', 'Achernar (soft)'], ['Kore', 'Kore (firm)']];
+function fillVoices() {
+  const v = $('#ttsVoice'); v.innerHTML = '';
+  if ($('#ttsEngine').value === 'google') { GVOICES.forEach(([k, l]) => v.add(new Option(l, k))); v.value = S.ai.gvoice || 'Leda'; return; }
+  window.buddy.ttsVoices().then((names) => {
+    names.forEach((n) => v.add(new Option(n.replace(/^Microsoft /, '').replace(/ Desktop$/, ''), n)));
+    v.value = names.includes(S.ai.voice) ? S.ai.voice : (names.find((n) => /Zira/i.test(n)) || names[0] || '');
+  });
+}
+$('#ttsEngine').onchange = fillVoices;
 $('#aiPreset').onchange = (e) => {
   const p = PRESETS[e.target.value]; $('#aiHint').textContent = p.hint;
   if (e.target.value !== 'custom') { $('#aiUrl').value = p.baseUrl; $('#aiModel').value = p.model; }
@@ -557,7 +635,7 @@ $('#aiPreset').onchange = (e) => {
 $('#aiGear').onclick = () => showAiSettings($('#aiSet').style.display !== 'flex');
 $('#aiBack').onclick = () => showAiSettings(false);
 $('#aiSave').onclick = async () => {
-  S.ai = { preset: $('#aiPreset').value, baseUrl: $('#aiUrl').value.trim(), model: $('#aiModel').value.trim(), speak: $('#aiSpeak').checked };
+  S.ai = { preset: $('#aiPreset').value, baseUrl: $('#aiUrl').value.trim(), model: $('#aiModel').value.trim(), speak: $('#aiSpeak').checked, engine: $('#ttsEngine').value, voice: $('#ttsEngine').value === 'windows' ? $('#ttsVoice').value : S.ai.voice, gvoice: $('#ttsEngine').value === 'google' ? $('#ttsVoice').value : S.ai.gvoice, pitch: parseInt($('#ttsPitch').value, 10) };
   const vm = $('#voiceModel').value; const voiceChanged = vm !== S.voiceModel; S.voiceModel = vm; save();
   const k = $('#aiKey').value.trim();
   if (k) { const r = await window.buddy.aiSetKey(k); if (!r.ok) { say(r.error, 5000, 'sad'); return; } aiHasKey = r.has; }
@@ -568,4 +646,15 @@ $('#aiClearKey').onclick = async () => { await window.buddy.aiSetKey(''); aiHasK
 $('#aiGo').onclick = () => { const v = $('#aiIn').value; $('#aiIn').value = ''; askAI(v); };
 $('#aiIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#aiGo').click(); });
 $('#aiStop').onclick = stopSpeaking;
+$('#ttsTest').onclick = () => speak("Hi! I'm Buddy. Do I sound cute?", { engine: $('#ttsEngine').value, voice: $('#ttsVoice').value, pitch: parseInt($('#ttsPitch').value, 10) });
 renderAnswer();
+
+function searchSpotify(q) {
+  window.buddy.openSpotify('spotify:search:' + encodeURIComponent(q));
+  say('Searching Spotify for “' + q + '” 🎵 (press play on the result)', 6000, 'music');
+  bodyAnim('wiggle', 800);
+}
+
+window.buddy.onVolume(({ vol, muted }) => {
+  say(muted ? 'Muted 🔇' : 'Volume ' + vol + '% ' + (vol > 60 ? '🔊' : vol > 25 ? '🔉' : '🔈'), 2500, 'happy');
+});

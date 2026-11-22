@@ -221,6 +221,9 @@
       <label class="chk"><input type="checkbox" id="aiSpeak"> Read answers aloud</label>
       <div class="row"><span class="small" style="min-width:74px">Voice model</span>
         <select id="voiceModel"><option value="whisper-tiny.en">Fast (tiny)</option><option value="whisper-base.en">Accurate (base)</option></select></div>
+      <div class="row"><span class="small" style="min-width:74px">Speaker</span><select id="ttsEngine"><option value="google">Google (Gemini)</option><option value="windows">Windows (offline)</option></select></div>
+      <div class="row"><span class="small" style="min-width:74px">Voice</span><select id="ttsVoice"></select></div>
+      <div class="row"><span class="small" style="min-width:74px">Cuteness</span><input type="range" id="ttsPitch" min="0" max="60" step="5" style="flex:1;accent-color:#7df9ff"><button class="btn" id="ttsTest">▶</button></div>
       <div class="row"><button class="btn pri" id="aiSave">Save</button><button class="btn" id="aiClearKey">Remove key</button></div>
     </div>
   </div>

@@ -52,7 +52,9 @@ The app is not code-signed, so Windows SmartScreen may show "Windows protected y
 - `focus 25`, `break 5`, `stop`
 - `todo buy milk`
 - `remind stretch in 10m`, `remind call mom at 17:30`
-- `play`, `pause`, `next`, `prev`, `volume up`, `volume down`, `mute`
+- `play`, `pause`, `next`, `prev`, `mute`, `unmute`
+- `volume 30` or `volume to 30` (exact system volume), `volume up 10`, `volume down 10` (or say "set the volume to thirty percent")
+- `play <song or artist>` (voice or typed) opens a Spotify search
 - `hide`, `quit`
 
 ## Notes
