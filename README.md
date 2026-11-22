@@ -23,6 +23,20 @@ npm install
 npm start
 ```
 
+## Build a Windows .exe
+
+```powershell
+npm install
+npm run dist
+```
+
+This creates two files in `dist/`:
+
+- `Desk-Buddy-Setup-<version>.exe` – one-click installer (recommended to share).
+- `Desk-Buddy-Portable-<version>.exe` – single file, no install.
+
+The app is not code-signed, so Windows SmartScreen may show "Windows protected your PC" the first time. Click **More info**, then **Run anyway**.
+
 ## Controls
 
 | Action | How |
@@ -49,3 +63,7 @@ npm start
 ## Inspiration
 
 Inspired by the Tabbie / Taby desktop-pet hardware projects, re-imagined as a desktop app.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

@@ -199,7 +199,7 @@ function setupTray() {
 
 function setAutoStart(on) {
   app.setLoginItemSettings(app.isPackaged
-    ? { openAtLogin: on }
+    ? { openAtLogin: on, path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath }
     : { openAtLogin: on, path: process.execPath, args: [app.getAppPath()] });
 }
 
@@ -210,7 +210,7 @@ app.whenReady().then(() => {
   startMediaKeys();
 
   // keep the Windows startup entry pointing at this folder (re-synced every launch unless turned off from the tray)
-  if ((loadState() || {}).autoStart !== false) setAutoStart(true);
+  if ((loadState() || {}).autoStart !== false && !process.env.BUDDY_NO_AUTOSTART) setAutoStart(true);
 
   globalShortcut.register('Control+Alt+Left', () => move('left'));
   globalShortcut.register('Control+Alt+Right', () => move('right'));
