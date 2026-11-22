@@ -1,10 +1,11 @@
-﻿const { app, BrowserWindow, ipcMain, screen, Tray, Menu, globalShortcut, nativeImage, shell } = require('electron');
+﻿const { app, BrowserWindow, ipcMain, screen, Tray, Menu, globalShortcut, nativeImage, shell, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer'); // lets the speech model use several threads
 
 const W = 320, H = 248, MARGIN = 8;
 let win, tray, fgProc, mediaProc;
@@ -115,49 +116,69 @@ while (($l = [Console]::In.ReadLine()) -ne $null) {
 }`;
   mediaProc = ps(script);
 }
-/* ---------- voice (Windows built-in System.Speech, offline) ---------- */
-let voiceProc, listening = false, voiceTimer;
-function ensureVoice() {
-  if (voiceProc) return;
-  const script = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-try {
-  Add-Type -AssemblyName System.Speech
-  $e = New-Object System.Speech.Recognition.SpeechRecognitionEngine
-  $e.SetInputToDefaultAudioDevice()
-  $e.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
-  $e.InitialSilenceTimeout = [TimeSpan]::FromSeconds(5)
-  $e.EndSilenceTimeout = [TimeSpan]::FromSeconds(0.8)
-  $e.EndSilenceTimeoutAmbiguous = [TimeSpan]::FromSeconds(1.0)
-  Write-Output "READY"
-} catch { Write-Output ("ERR|" + $_.Exception.Message); exit }
-while (($l = [Console]::In.ReadLine()) -ne $null) {
-  try {
-    $r = $e.Recognize([TimeSpan]::FromSeconds(9))
-    if ($r -and $r.Text) { Write-Output ("HEARD|" + $r.Text) } else { Write-Output "NONE" }
-  } catch { Write-Output ("ERR|" + $_.Exception.Message) }
-}`;
-  voiceProc = ps(script);
-  let buf = '';
-  voiceProc.stdout.on('data', (d) => {
-    buf += d.toString('utf8'); let i;
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
-      const [type, ...rest] = line.split('|');
-      if (type !== 'READY') { listening = false; clearTimeout(voiceTimer); }
-      if (win && !win.isDestroyed()) win.webContents.send('voice-result', { type, text: rest.join('|') });
-    }
+/* ---------- voice: offline Whisper (runs in the renderer; model downloaded once) ---------- */
+const MODEL = 'whisper-base.en'; // swap for 'whisper-tiny.en' (faster, less accurate)
+const MODEL_FILES = ['config.json', 'generation_config.json', 'preprocessor_config.json', 'tokenizer.json', 'tokenizer_config.json',
+  'onnx/encoder_model_quantized.onnx', 'onnx/decoder_model_merged_quantized.onnx'];
+const https = require('https');
+const { pathToFileURL } = require('url');
+
+function download(url, dest, onBytes, hops = 0) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'desk-buddy' } }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && hops < 6) {
+        res.resume(); return resolve(download(new URL(res.headers.location, url).href, dest, onBytes, hops + 1));
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('download failed (' + res.statusCode + ')')); }
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      const tmp = dest + '.part'; const out = fs.createWriteStream(tmp);
+      res.on('data', (c) => onBytes(c.length));
+      res.pipe(out);
+      out.on('finish', () => out.close(() => { fs.renameSync(tmp, dest); resolve(); }));
+      out.on('error', reject); res.on('error', reject);
+    }).on('error', reject);
   });
-  voiceProc.on('exit', () => { voiceProc = null; if (listening) { listening = false; win && win.webContents.send('voice-result', { type: 'ERR', text: 'speech engine stopped' }); } });
 }
-function voiceListen() {
-  if (listening) return;
-  ensureVoice(); listening = true;
-  win.webContents.send('voice-result', { type: 'LISTENING', text: '' });
-  voiceProc.stdin.write('listen\n');
-  clearTimeout(voiceTimer);
-  voiceTimer = setTimeout(() => { if (listening) { listening = false; win.webContents.send('voice-result', { type: 'NONE', text: '' }); } }, 25000);
+
+let modelPromise;
+function ensureModel() {
+  if (modelPromise) return modelPromise;
+  modelPromise = (async () => {
+    const root = path.join(app.getPath('userData'), 'models');
+    const base = path.join(root, MODEL);
+    const missing = MODEL_FILES.filter((f) => { try { return fs.statSync(path.join(base, f)).size === 0; } catch { return true; } });
+    if (missing.length) {
+      // sizes first, so progress is a real percentage
+      const sizes = {}; let total = 0;
+      for (const f of missing) {
+        const url = 'https://huggingface.co/Xenova/' + MODEL + '/resolve/main/' + f;
+        const size = await new Promise((resolve) => {
+          const head = (u, hops = 0) => https.request(u, { method: 'HEAD', headers: { 'User-Agent': 'desk-buddy' } }, (r) => {
+            if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location && hops < 6) return head(new URL(r.headers.location, u).href, hops + 1);
+            resolve(parseInt(r.headers['content-length'] || '0', 10));
+          }).on('error', () => resolve(0)).end();
+          head(url);
+        });
+        sizes[f] = size; total += size;
+      }
+      let done = 0, lastPct = -1;
+      for (const f of missing) {
+        await download('https://huggingface.co/Xenova/' + MODEL + '/resolve/main/' + f, path.join(base, f), (n) => {
+          done += n; const pct = total ? Math.min(99, Math.floor((done / total) * 100)) : 0;
+          if (pct !== lastPct && win && !win.isDestroyed()) { lastPct = pct; win.webContents.send('voice-model-progress', pct); }
+        });
+      }
+    }
+    return {
+      model: MODEL,
+      modelRoot: pathToFileURL(root).href + '/',
+      wasmRoot: pathToFileURL(path.join(__dirname, 'voice', 'vendor')).href + '/',
+      threads: Math.max(1, Math.min(4, require('os').cpus().length - 1)),
+    };
+  })().catch((err) => { modelPromise = null; throw err; });
+  return modelPromise;
 }
+function voiceListen() { if (win && !win.isDestroyed()) win.webContents.send('voice-start'); }
 
 const KEYS = { playpause: 0xB3, next: 0xB0, prev: 0xB1, volup: 0xAF, voldown: 0xAE, mute: 0xAD };
 
@@ -230,6 +251,10 @@ app.whenReady().then(() => {
   ipcMain.on('drag-move', () => { if (!drag) return; const c = screen.getCursorScreenPoint(); win.setBounds({ x: drag.p[0] + c.x - drag.m.x, y: drag.p[1] + c.y - drag.m.y, width: W, height: H }); });
   ipcMain.on('drag-end', () => { drag = null; persistPos(); });
   ipcMain.on('voice-listen', voiceListen);
+  ipcMain.handle('voice-ensure-model', () => ensureModel());
+  // microphone access for voice commands (only for our own window)
+  session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(perm === 'media'));
+  session.defaultSession.setPermissionCheckHandler((wc, perm) => perm === 'media');
   ipcMain.on('hide', () => win.hide());
   ipcMain.on('quit', () => app.quit());
   ipcMain.on('focus-window', () => { win.focus(); });
@@ -238,5 +263,5 @@ app.whenReady().then(() => {
 });
 
 app.on('second-instance', () => { if (win) { win.showInactive(); } });
-app.on('will-quit', () => { globalShortcut.unregisterAll(); try { fgProc.kill(); mediaProc.kill(); voiceProc && voiceProc.kill(); } catch {} });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); try { fgProc.kill(); mediaProc.kill(); } catch {} });
 app.on('window-all-closed', (e) => e.preventDefault());

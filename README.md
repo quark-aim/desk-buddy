@@ -9,7 +9,7 @@ A cute little desktop companion for Windows, built with Electron. It lives in a 
 - **Pomodoro timer** – focus/break timer with a countdown chip on its face. During a focus session it nags you if you open distracting sites.
 - **To-do list and reminders** – add tasks, tick them off, set reminders by clock time or "in N minutes".
 - **Spotify / media control** – play/pause, next, previous and volume via Windows media keys (no login needed). Shows the current song from the Spotify window title.
-- **Voice commands** – push-to-talk using Windows' built-in offline speech recognition (`Ctrl+Alt+V` or the mic button).
+- **Voice commands** – push-to-talk (`Ctrl+Alt+V` or the mic button) using OpenAI's Whisper model running fully offline on your PC (via transformers.js). The first use downloads a ~77 MB model once (needs internet that one time); after that no audio ever leaves your computer. Free, no API key.
 - **Moves around** – drag it anywhere, or say/type `left`, `right`, `center`, `top`, `bottom` to slide it. The window size stays fixed.
 - **Starts with Windows** – registers itself at login (toggle in the tray menu).
 - **Interactive** – eyes follow your cursor, click to poke it, it falls asleep if ignored.
@@ -56,7 +56,8 @@ The app is not code-signed, so Windows SmartScreen may show "Windows protected y
 
 ## Notes
 
-- Windows only: app detection, media keys and voice use PowerShell and built-in Windows APIs. No native Node modules are needed.
+- Windows only: app detection and media keys use PowerShell and built-in Windows APIs. No native Node modules are needed.
+- Voice: `npm install` copies the speech runtime into `voice/vendor/` (git-ignored). To trade accuracy for speed, change `MODEL` in `main.js` from `whisper-base.en` to `whisper-tiny.en` (about twice as fast, slightly less accurate).
 - Settings (to-dos, reminders, position) are saved in Electron's user data folder.
 - To turn off start-with-Windows, untick it in the tray menu.
 

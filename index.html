@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; script-src 'self' file: blob: 'wasm-unsafe-eval'; worker-src 'self' file: blob:; connect-src 'self' file: blob: data:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:">
 <title>Desk Buddy</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
@@ -212,7 +212,7 @@
     <button data-p="todo" title="To-do">✅</button>
     <button data-p="rem" title="Reminders">⏰</button>
     <button data-p="music" title="Music">🎵</button>
-    <button id="micBtn" title="Voice command (Ctrl+Alt+V)">🎤</button>
+    <button id="micBtn" title="Voice command (Ctrl+Alt+V) - offline Whisper">🎤</button>
     <button data-p="cmd" title="Talk / commands">💬</button>
   </div>
 </div>

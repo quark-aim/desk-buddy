@@ -349,6 +349,7 @@ function voiceNormalize(raw) {
   let t = raw.toLowerCase().replace(/[.,!?']/g, '').trim();
   t = numberWords(t)
     .replace(/^(hey |ok |okay )?(buddy|tabby|pet)[ ,]*/, '').replace(/^(please |can you |could you |would you )+/, '').replace(/ please$/, '');
+  t = t.replace(/\b(go|move|slide|to|the)\s+(write|rite)\b/g, '$1 right').replace(/^(write|rite)$/, 'right').replace(/\b(go|move|slide|to|the)\s+(lift|loft|lef)\b/g, '$1 left').replace(/^(lift|loft)$/, 'left');
   let m;
   if ((m = t.match(/\b(?:move|go|slide|walk|jump|get)\b.*?\b(left|right|center|middle|top|bottom|up|down)\b/)) || (m = t.match(/^(left|right|center|middle|top|bottom)$/))) return m[1];
   if ((m = t.match(/\b(?:focus|pomodoro|work)\b.*?(\d+)/)) || (m = t.match(/\b(\d+)\s*(?:min|minute)s?\b.*\b(?:focus|pomodoro|work)\b/))) return 'focus ' + m[1];
@@ -370,16 +371,96 @@ function voiceNormalize(raw) {
   return t;
 }
 let voiceGuard;
-function endListening() { clearTimeout(voiceGuard); if (face.className === 'listen') setMood(baseMood); }
-window.buddy.onVoice(({ type, text }) => {
-  if (type === 'LISTENING') {
-    lastActive = Date.now(); setMood('listen'); say('Listening… 🎤', 9000);
-    clearTimeout(voiceGuard); voiceGuard = setTimeout(endListening, 27000);
-  } else if (type === 'HEARD') {
-    endListening(); const cmd = voiceNormalize(text);
-    say('🎤 “' + text + '”', 1800, 'wow');
+const voice = { worker: null, ready: false, loadP: null, busy: false, reqId: 0 };
+
+function endListening() { clearTimeout(voiceGuard); if (['listen', 'think'].includes(face.className.split(' ')[0])) setMood(baseMood); }
+
+// loads the model (downloads it once on first use) and starts the worker
+function initVoice() {
+  if (voice.loadP) return voice.loadP;
+  voice.loadP = (async () => {
+    say('Getting my ears ready… one-time download 🎧', 60000);
+    const info = await window.buddy.ensureVoiceModel();
+    say('Loading voice model…', 60000);
+    voice.worker = new Worker('voice/worker.js', { type: 'module' });
+    await new Promise((resolve, reject) => {
+      voice.worker.onmessage = (ev) => { if (ev.data.type === 'ready') resolve(); else if (ev.data.type === 'error') reject(new Error(ev.data.message)); };
+      voice.worker.onerror = (ev) => reject(new Error(ev.message || 'voice worker failed to start'));
+      voice.worker.postMessage({ type: 'load', ...info });
+    });
+    voice.ready = true;
+  })().catch((err) => { voice.loadP = null; if (voice.worker) { voice.worker.terminate(); voice.worker = null; } throw err; });
+  return voice.loadP;
+}
+window.buddy.onVoiceModelProgress((pct) => say('Downloading voice model… ' + pct + '% 🎧', 8000));
+
+function transcribe(audio) {
+  return new Promise((resolve, reject) => {
+    const id = ++voice.reqId;
+    const onMsg = (ev) => {
+      if (ev.data.id !== id) return;
+      voice.worker.removeEventListener('message', onMsg);
+      if (ev.data.type === 'text') resolve(ev.data.text); else reject(new Error(ev.data.message));
+    };
+    voice.worker.addEventListener('message', onMsg);
+    voice.worker.postMessage({ type: 'transcribe', id, audio }, [audio.buffer]);
+  });
+}
+
+// records from the mic (16 kHz mono) until you stop talking; resolves null if no speech was heard
+async function recordUtterance() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = []; const rmsList = [];
+  let spoke = false, silent = 0, thr = 0.02; const t0 = Date.now(), dur = 4096 / 16000;
+  return new Promise((resolve) => {
+    const finish = (heard) => {
+      proc.onaudioprocess = null; try { proc.disconnect(); src.disconnect(); } catch {}
+      stream.getTracks().forEach((t) => t.stop()); ctx.close();
+      if (!heard) return resolve(null);
+      const total = chunks.reduce((n, c) => n + c.length, 0), out = new Float32Array(total); let o = 0;
+      for (const c of chunks) { out.set(c, o); o += c.length; }
+      resolve(out);
+    };
+    proc.onaudioprocess = (e) => {
+      const d = e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d));
+      let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+      const rms = Math.sqrt(s / d.length); rmsList.push(rms);
+      if (rmsList.length === 3) thr = Math.max(0.018, Math.min(...rmsList) * 3 + 0.006); // learn the room's noise level
+      if (rmsList.length > 3) { if (rms > thr) { spoke = true; silent = 0; } else if (spoke) silent += dur; }
+      const el = (Date.now() - t0) / 1000;
+      if (spoke && silent >= 1.0) finish(true);
+      else if (!spoke && el > 6) finish(false);
+      else if (el > 12) finish(spoke);
+    };
+    src.connect(proc); proc.connect(ctx.destination);
+  });
+}
+
+const JUNK = /^(you|thank you\.?|thanks for watching\.?|bye\.?|\.+|the end\.?)$/i;
+async function startVoice() {
+  if (voice.busy) return; voice.busy = true; lastActive = Date.now();
+  clearTimeout(voiceGuard); voiceGuard = setTimeout(endListening, 90000);
+  try {
+    if (!voice.ready) { setMood('think'); await initVoice(); }
+    setMood('listen'); say('Listening… 🎤', 14000);
+    const audio = await recordUtterance();
+    if (!audio) { endListening(); say("I didn't hear anything 🙉 try again", 3000, 'sad'); return; }
+    setMood('think'); say('Thinking… 💭', 20000);
+    const text = await transcribe(audio);
+    const clean = (text || '').replace(/\[[^\]]*\]|\([^)]*\)/g, '').trim();
+    endListening();
+    if (!clean || JUNK.test(clean)) { say("I didn't catch that 🙉 try again", 3000, 'sad'); return; }
+    const cmd = voiceNormalize(clean);
+    say('🎤 “' + clean + '”', 1800, 'wow');
     setTimeout(() => runCommand(cmd), 1000);
-  } else if (type === 'NONE') { endListening(); say("I didn't catch that 🙉 try again", 3000, 'sad'); }
-  else if (type === 'ERR') { endListening(); say("Voice isn't working: " + text.slice(0, 70), 6000, 'sad'); }
-});
-$('#micBtn').onclick = () => window.buddy.voiceListen();
+  } catch (err) {
+    endListening();
+    const msg = /Permission|NotAllowed|denied/i.test(String(err.message)) ? 'Mic blocked: allow microphone access in Windows settings' : String(err.message).slice(0, 80);
+    say("Voice problem: " + msg, 7000, 'sad');
+  } finally { clearTimeout(voiceGuard); voice.busy = false; }
+}
+window.buddy.onVoiceStart(startVoice);
+$('#micBtn').onclick = startVoice;
